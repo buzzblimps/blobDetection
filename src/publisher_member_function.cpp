@@ -22,13 +22,41 @@ using namespace std;
 int maxx[3] = {0,0,0};
 int minn[3] = {255,255,255};
 
+cv::Mat rectify(const cv::Mat& inputImage, const std::string& yamlFilePath) {
+    cv::FileStorage fs(yamlFilePath, cv::FileStorage::READ);
+    if (!fs.isOpened()) {
+        std::cerr << "Failed to open " << yamlFilePath << std::endl;
+        return cv::Mat();  // Return an empty matrix on failure
+    }
 
+    // Read calibration parameters from the YAML file
+    cv::Mat cameraMatrix, distCoeffs, rectificationMatrix, projectionMatrix;
+    fs["camera_matrix"] >> cameraMatrix;
+    fs["distortion_coefficients"] >> distCoeffs;
+    fs["rectification_matrix"] >> rectificationMatrix;
+    fs["projection_matrix"] >> projectionMatrix;
+    fs.release();  // Close the file
 
+    // Convert cv::Mat to cv::Matx for rectification matrix
+    cv::Matx33d R;
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            R(i, j) = rectificationMatrix.at<double>(i, j);
+        }
+    }
 
+    // Prepare the image size from the input image
+    cv::Size imageSize = inputImage.size();
 
+    // Prepare maps for remapping
+    cv::Mat map1, map2;
+    cv::initUndistortRectifyMap(cameraMatrix, distCoeffs, R, projectionMatrix, imageSize, CV_16SC2, map1, map2);
 
-
-
+    // Rectify the image
+    cv::Mat rectifiedImage;
+    cv::remap(inputImage, rectifiedImage, map1, map2, cv::INTER_LINEAR);
+    return rectifiedImage;
+} 
 
 class PointPublisher : public rclcpp::Node {
 public:
@@ -36,7 +64,6 @@ public:
         publisher_ = this->create_publisher<std_msgs::msg::Float64MultiArray>("target", 10);
         timer_ = this->create_wall_timer(100ms, std::bind(&PointPublisher::processAndPublish, this));
     }
-
 private:
     void processAndPublish() {
         VideoCapture cap(0);  // Open the default camera
@@ -52,8 +79,15 @@ private:
             RCLCPP_WARN(this->get_logger(), "Empty frame captured");
             return;
         }
+
         int width = frame.size().width;
         int height = frame.size().height;
+
+        Mat frame_left;
+        frame_left = frame(Range(0, height), Range(0, width / 2));
+        frame_left = rectify(frame_left, "home/laptop-1/terry/blobDetection/cpp_pubsub/camera_test_elp_left.yaml");
+        imshow("Rect", frame_left);
+
         circle(frame, Point(width / 2, height/ 2), 10, Scalar(0, 0, 255), 1);
         imshow("frame", frame);
         std_msgs::msg::Float64MultiArray msg;
@@ -104,124 +138,124 @@ private:
         imshow("Mask", mask);
         imshow("Mask_Orange", mask_orange);
         imshow("Mask_Yellow", mask_yellow);
-    stringstream ss;
-    ss << time;
-    string str2 = ss.str();
-    str2 = "mask/" + str2 + ".jpg";
+        stringstream ss;
+        ss << time;
+        string str2 = ss.str();
+        str2 = "mask/" + str2 + ".jpg";
 
-    Mat edges;
-    GaussianBlur(mask, mask, Size(11, 11), 1.5);
-    Canny(mask, edges, 500, 700);
+        Mat edges;
+        GaussianBlur(mask, mask, Size(11, 11), 1.5);
+        Canny(mask, edges, 500, 700);
 
-    vector<Vec3f> circles;
-    HoughCircles(edges, circles, HOUGH_GRADIENT, 1, 1000, 1500, 20, 50, 0);
-    
-    string str3 = ss.str();
-    str3 = "circles/" + str3 + ".jpg";
+        vector<Vec3f> circles;
+        HoughCircles(edges, circles, HOUGH_GRADIENT, 1, 1000, 1500, 20, 50, 0);
+        
+        string str3 = ss.str();
+        str3 = "circles/" + str3 + ".jpg";
 
-     std::vector<std::vector<Point>> contours;
-    findContours(mask_orange, contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+        std::vector<std::vector<Point>> contours;
+        findContours(mask_orange, contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
 
-    for (const auto& contour : contours) {
-        double epsilon = 0.04 * arcLength(contour, true);
-        std::vector<Point> approx;
-        approxPolyDP(contour, approx, epsilon, true);
+        for (const auto& contour : contours) {
+            double epsilon = 0.04 * arcLength(contour, true);
+            std::vector<Point> approx;
+            approxPolyDP(contour, approx, epsilon, true);
 
-        if (approx.size() == 4 && isContourConvex(approx) && contourArea(contour) > 1000) { 
-            drawContours(frame, std::vector<std::vector<Point>>{approx}, -1, Scalar(255), 2);
-            Moments m = moments(contour);
+            if (approx.size() == 4 && isContourConvex(approx) && contourArea(contour) > 1000) { 
+                drawContours(frame, std::vector<std::vector<Point>>{approx}, -1, Scalar(255), 2);
+                Moments m = moments(contour);
 
 
-            msg.data[3] = m.m10 / m.m00;
-            msg.data[4] = m.m10 / m.m00;
+                msg.data[3] = m.m10 / m.m00;
+                msg.data[4] = m.m10 / m.m00;
+            }
+            imshow("Orange_Contour", frame);
         }
-        imshow("Orange_Contour", frame);
-    }
-    
-     std::vector<std::vector<Point>> contours_yellow;
-    findContours(mask_yellow, contours_yellow, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+        
+        std::vector<std::vector<Point>> contours_yellow;
+        findContours(mask_yellow, contours_yellow, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
 
-    for (const auto& contour : contours_yellow) {
-        double epsilon = 0.04 * arcLength(contour, true);
-        std::vector<Point> approx;
-        approxPolyDP(contour, approx, epsilon, true);
+        for (const auto& contour : contours_yellow) {
+            double epsilon = 0.04 * arcLength(contour, true);
+            std::vector<Point> approx;
+            approxPolyDP(contour, approx, epsilon, true);
 
-        if (approx.size() == 4 && isContourConvex(approx) && contourArea(contour) > 1000) { 
-            drawContours(frame, std::vector<std::vector<Point>>{approx}, -1, Scalar(255), 2);
-            Moments m = moments(contour);
+            if (approx.size() == 4 && isContourConvex(approx) && contourArea(contour) > 1000) { 
+                drawContours(frame, std::vector<std::vector<Point>>{approx}, -1, Scalar(255), 2);
+                Moments m = moments(contour);
 
 
-            msg.data[6] = m.m10 / m.m00;
-            msg.data[7] = m.m10 / m.m00;
+                msg.data[6] = m.m10 / m.m00;
+                msg.data[7] = m.m10 / m.m00;
+            }
+            imshow("Yellow_Contour", frame);
         }
-        imshow("Yellow_Contour", frame);
-    }
-    if (circles.empty()) {
-        RCLCPP_INFO(this->get_logger(), "Published point: (%.2f, %.2f, %.2f, %.2f, %.2f, %.2f)", msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
-          
-          publisher_->publish(msg);
-        return;
-    }
-
-    Mat frame2 = frame;
-    for (int i = 0; i < circles.size(); i++) {
-        circle(frame2, Point(circles[i][0], circles[i][1]), 10, Scalar(255, 0, 0), -1);
-        circle(frame2, Point(circles[i][0], circles[i][1]), circles[i][2], Scalar(0, 255, 0), 5);
-        circle(mask, Point(circles[i][0], circles[i][1]), 10, Scalar(255, 0, 0), -1);
-        circle(mask, Point(circles[i][0], circles[i][1]), circles[i][2], Scalar(0, 255, 0), 5);
-        
-    }
-    imshow("Circles", frame2);
-    int largestIndex = 0;
-    float largestArea = 0;
-    Vec3f largest = circles[0];
-    for (size_t i = 0; i < circles.size(); i++) {
-        Point center(cvRound(circles[i][0]), cvRound(circles[i][1]));
-        int radius = cvRound(circles[i][2]) - 20;
-
-        float area = CV_PI * radius * radius;
-        if (area >= largestArea) {
-            largestArea = area;
-            largestIndex = i;
-
+        if (circles.empty()) {
+            RCLCPP_INFO(this->get_logger(), "Published point: (%.2f, %.2f, %.2f, %.2f, %.2f, %.2f)", msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
+            
+            publisher_->publish(msg);
+            return;
         }
-    }
-        
-    
-        
-        string str = ss.str();
-        str = "results/" + str + ".jpg";
-        
-        Mat mask8U(mask.size(), CV_8UC3);
 
-        for (int y = 0; y < mask.rows; ++y) {
-            for (int x = 0; x < mask.cols; ++x) {
-                uchar pixel = mask.at<uchar>(y, x);
-                mask8U.at<Vec3b>(y, x) = Vec3b(pixel, pixel, pixel);
+        Mat frame2 = frame;
+        for (int i = 0; i < circles.size(); i++) {
+            circle(frame2, Point(circles[i][0], circles[i][1]), 10, Scalar(255, 0, 0), -1);
+            circle(frame2, Point(circles[i][0], circles[i][1]), circles[i][2], Scalar(0, 255, 0), 5);
+            circle(mask, Point(circles[i][0], circles[i][1]), 10, Scalar(255, 0, 0), -1);
+            circle(mask, Point(circles[i][0], circles[i][1]), circles[i][2], Scalar(0, 255, 0), 5);
+            
+        }
+        imshow("Circles", frame2);
+        int largestIndex = 0;
+        float largestArea = 0;
+        Vec3f largest = circles[0];
+        for (size_t i = 0; i < circles.size(); i++) {
+            Point center(cvRound(circles[i][0]), cvRound(circles[i][1]));
+            int radius = cvRound(circles[i][2]) - 20;
+
+            float area = CV_PI * radius * radius;
+            if (area >= largestArea) {
+                largestArea = area;
+                largestIndex = i;
+
             }
         }
+            
         
-        if (largestArea < 5000) {
-          RCLCPP_INFO(this->get_logger(), "No large circle");
-          publisher_->publish(msg);
-          return;
+            
+            string str = ss.str();
+            str = "results/" + str + ".jpg";
+            
+            Mat mask8U(mask.size(), CV_8UC3);
+
+            for (int y = 0; y < mask.rows; ++y) {
+                for (int x = 0; x < mask.cols; ++x) {
+                    uchar pixel = mask.at<uchar>(y, x);
+                    mask8U.at<Vec3b>(y, x) = Vec3b(pixel, pixel, pixel);
+                }
+            }
+            
+            if (largestArea < 5000) {
+            RCLCPP_INFO(this->get_logger(), "No large circle");
+            publisher_->publish(msg);
+            return;
+            }
+            
+            circle(frame, Point(largest[0], largest[1]), 10, Scalar(255, 0, 0), -1);
+            circle(frame, Point(largest[0], largest[1]), largest[2] - 20, Scalar(0, 255, 0), 5);
+            //imshow("frame", frame);
+            
+        
+        
+
+            msg.data[0] = largest[0];
+            msg.data[1] = largest[1];
+
+            publisher_->publish(msg);
+            RCLCPP_INFO(this->get_logger(), "Published point: (%.2f, %.2f, %.2f, %.2f, %.2f, %.2f)", msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
+
+            cap.release();
         }
-        
-        circle(frame, Point(largest[0], largest[1]), 10, Scalar(255, 0, 0), -1);
-        circle(frame, Point(largest[0], largest[1]), largest[2] - 20, Scalar(0, 255, 0), 5);
-        //imshow("frame", frame);
-        
-    
-       
-
-        msg.data[0] = largest[0];
-        msg.data[1] = largest[1];
-
-        publisher_->publish(msg);
-        RCLCPP_INFO(this->get_logger(), "Published point: (%.2f, %.2f, %.2f, %.2f, %.2f, %.2f)", msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
-
-        cap.release();
-    }
 
     rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr publisher_;
     rclcpp::TimerBase::SharedPtr timer_;
