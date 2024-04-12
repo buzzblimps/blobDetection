@@ -21,42 +21,45 @@ int maxx[3] = {0,0,0};
 int minn[3] = {255,255,255};
 
 //FIXME: MAKE A STRUCT FOR THE LEFT AND RIGHT CALIBRATION DATA
+struct camera_config
+{
+    cv::Mat cameraMatrix;
+    cv::Mat distCoeffs;
+    cv::Mat rectificationMatrix;
+    cv::Mat projectionMatrix;
+};
 
-bool loadCameraCalibration(const std::string& calibrationFile, cv::Mat& cameraMatrix, cv::Mat& distCoeffs, cv::Mat& rectificationMatrix, cv::Mat& projectionMatrix) {
+camera_config loadCameraCalibration(const std::string& calibrationFile) {
     try {
         YAML::Node config = YAML::LoadFile(calibrationFile);
-        
+
         std::vector<double> cameraMatrixData = config["camera_matrix"]["data"].as<std::vector<double>>();
         std::vector<double> distCoeffsData = config["distortion_coefficients"]["data"].as<std::vector<double>>();
         std::vector<double> rectificationMatrixData = config["rectification_matrix"]["data"].as<std::vector<double>>();
         std::vector<double> projectionMatrixData = config["projection_matrix"]["data"].as<std::vector<double>>();
         
-        cameraMatrix = cv::Mat(3, 3, CV_64F, cameraMatrixData.data()).clone();
-        distCoeffs = cv::Mat(1, distCoeffsData.size(), CV_64F, distCoeffsData.data()).clone();
-        rectificationMatrix = cv::Mat(3, 3, CV_64F, rectificationMatrixData.data()).clone();
-        projectionMatrix = cv::Mat(3, 4, CV_64F, projectionMatrixData.data()).clone();
+        camera_config conf;
+        conf.cameraMatrix = cv::Mat(3, 3, CV_64F, cameraMatrixData.data()).clone();
+        conf.distCoeffs = cv::Mat(1, distCoeffsData.size(), CV_64F, distCoeffsData.data()).clone();
+        conf.rectificationMatrix = cv::Mat(3, 3, CV_64F, rectificationMatrixData.data()).clone();
+        conf.projectionMatrix = cv::Mat(3, 4, CV_64F, projectionMatrixData.data()).clone();
 
-        cout <<"camera matrix: " << cameraMatrix << endl << "dist coeffs: " << distCoeffs << endl
-             << "rect matrix: " << rectificationMatrix << endl << "proj matrix" << projectionMatrix << endl;
+        cout <<"\n\ncamera matrix\n" << conf.cameraMatrix << endl << "\n\ndist coeffs\n" << conf.distCoeffs << endl
+             << "\n\nrect matrix\n" << conf.rectificationMatrix << endl << "\n\nproj matrix\n" << conf.projectionMatrix << endl <<endl << endl;
 
-        return true;
+        return conf;
 
     } catch (const YAML::Exception& e) {
         
         std::cerr << "Error loading camera calibration file: " << e.what() << std::endl;
-        return false;
+        return camera_config();
 
     }
 }
 
-cv::Mat rectify(const cv::Mat& inputImage, const std::string& yamlFilePath) {
-    cv::Mat cameraMatrix, distCoeffs, rectMatrix, projMatrix, rectifiedImage;
-    if (!loadCameraCalibration(yamlFilePath, cameraMatrix, distCoeffs, rectMatrix, projMatrix)) {
-        return cv::Mat();
-    }
-
-    cv::Mat map1, map2;
-    cv::initUndistortRectifyMap(cameraMatrix, distCoeffs, rectMatrix, projMatrix, inputImage.size(), CV_16SC2, map1, map2);
+cv::Mat rectify(const cv::Mat& inputImage, camera_config &conf) {
+    cv::Mat map1, map2, rectifiedImage;
+    cv::initUndistortRectifyMap(conf.cameraMatrix, conf.distCoeffs, conf.rectificationMatrix, conf.projectionMatrix, inputImage.size(), CV_16SC2, map1, map2);
     cv::remap(inputImage, rectifiedImage, map1, map2, cv::INTER_LINEAR);
     return rectifiedImage;
 } 
@@ -64,26 +67,16 @@ cv::Mat rectify(const cv::Mat& inputImage, const std::string& yamlFilePath) {
 class PointPublisher : public rclcpp::Node {
 public:
     VideoCapture cap;
+    camera_config left_cam  = loadCameraCalibration("../camera3_elp_left.yaml");
+    camera_config right_cam = loadCameraCalibration("../camera3_elp_right.yaml");
 
     PointPublisher() : Node("point_publisher") {
 
         cap.open(3);
-        // if (!cap.isOpened()) {
-        // CV_Assert("CamL open failed");
-        // }
         publisher_ = this->create_publisher<std_msgs::msg::Float64MultiArray>("target", 10);
         timer_ = this->create_wall_timer(100ms, std::bind(&PointPublisher::processAndPublish, this));    
-           
-        // std::vector<double> cameraMatrixData, distCoeffsData, rectificationMatrixData, projectionMatrixData;
-
-        // left_calibration_file = "";
-        // right_calibration_file = "";
-
-        // loadCameraCalibration(left_calibration_file, cameraMatrixData, distCoeffsData, rectificationMatrixData, projectionMatrixData);
-        // loadCameraCalibration(right_calibration_file, cameraMatrixData, distCoeffsData, rectificationMatrixData, projectionMatrixData);
-
-
     }
+
 private:
     void processAndPublish() {
         Mat frame, hsv, mask, mask1, mask2, mask_orange, mask_yellow;
@@ -109,8 +102,8 @@ private:
         frame_left  = frame(Range(0, height), Range(0, width / 2));
         frame_right = frame(Range(0, height), Range(width / 2, width));
 
-        frame_left = rectify(frame_left, "/home/laptop-1/terry/blobDetection/cpp_pubsub/camera_test_elp_left.yaml");
-        frame_right = rectify(frame_right, "/home/laptop-1/terry/blobDetection/cpp_pubsub/camera_test_elp_right.yaml");
+        frame_left  = rectify(frame_left, left_cam);
+        frame_right = rectify(frame_right, right_cam);
 
         imshow("Left_Rect", frame_left);
         imshow("Right_Rect", frame_right);
