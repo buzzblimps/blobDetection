@@ -70,9 +70,9 @@ public:
     camera_config left_cam  = loadCameraCalibration("../camera3_elp_left.yaml");
     camera_config right_cam = loadCameraCalibration("../camera3_elp_right.yaml");
 
-    PointPublisher() : Node("point_publisher") {
+    PointPublisher(int cam_feed) : Node("point_publisher") {
 
-        cap.open(3);
+        cap.open(cam_feed);
         publisher_ = this->create_publisher<std_msgs::msg::Float64MultiArray>("target", 10);
         timer_ = this->create_wall_timer(100ms, std::bind(&PointPublisher::processAndPublish, this));    
     }
@@ -95,8 +95,6 @@ private:
         int width = frame.size().width;
         int height = frame.size().height;
 
-        imshow("image", frame);
-
         //RECTIFICATION CODE
         Mat frame_left, frame_right;
         frame_left  = frame(Range(0, height), Range(0, width / 2));
@@ -105,11 +103,53 @@ private:
         frame_left  = rectify(frame_left, left_cam);
         frame_right = rectify(frame_right, right_cam);
 
-        imshow("Left_Rect", frame_left);
-        imshow("Right_Rect", frame_right);
+        cv::Mat rect_hstack, canvas;
+        vector<cv::Mat> rect_hstack_list = {frame_left, frame_right};
+        cv::hconcat(rect_hstack_list, rect_hstack);
+        vector<cv::Mat> canvas_list = {frame, rect_hstack};
+        cv::vconcat(canvas_list, canvas);
 
+        imshow("Stereo/Rectified Output", canvas);
 
+        Ptr<SIFT> sift = SIFT::create();
+        std::vector<KeyPoint> left_keypoints, right_keypoints;
+        Mat left_descriptors, right_descriptors;
+        sift->detectAndCompute(frame_left, Mat(), left_keypoints, left_descriptors);
+        sift->detectAndCompute(frame_right, Mat(), right_keypoints, right_descriptors);
+        Ptr<DescriptorMatcher> matcher = DescriptorMatcher::create(DescriptorMatcher::FLANNBASED);
 
+        try
+        {
+            // Match the descriptors between the left and right images
+            std::vector<std::vector<DMatch>> matches;
+            matcher->knnMatch(left_descriptors, right_descriptors, matches, 2);
+
+            // Filter the matches using the ratio test
+            std::vector<DMatch> good_matches;
+            for (const auto& match_pair : matches) {
+                if (match_pair.size() == 2 && match_pair[0].distance < 0.7 * match_pair[1].distance) {
+                good_matches.push_back(match_pair[0]);
+                }
+            }
+
+            // Compute the disparity map
+            Mat disparity_map(frame_left.size(), CV_32F);
+            for (const auto& match : good_matches) {
+                const KeyPoint& left_kp = left_keypoints[match.queryIdx];
+                const KeyPoint& right_kp = right_keypoints[match.trainIdx];
+                disparity_map.at<float>(left_kp.pt.y, left_kp.pt.x) = left_kp.pt.x - right_kp.pt.x;
+            }
+
+            // Normalize the disparity map for visualization
+            double min_val, max_val;
+            minMaxLoc(disparity_map, &min_val, &max_val);
+            Mat disparity_vis;
+            disparity_map.convertTo(disparity_vis, CV_8U, 255.0 / (max_val - min_val), -min_val * 255.0 / (max_val - min_val));
+            imshow("Disparity Map", disparity_vis);
+        }
+        catch (exception e) {}
+
+        // Display the disparity map
 
 
 
@@ -288,7 +328,10 @@ private:
 
 int main(int argc, char **argv) {
     rclcpp::init(argc, argv);
-    auto node = std::make_shared<PointPublisher>();
+
+    int cam_feed = (argc > 1) ? stoi(argv[1]) : 0;
+
+    auto node = std::make_shared<PointPublisher>(cam_feed);
     rclcpp::spin(node);
     rclcpp::shutdown();
     return 0;
